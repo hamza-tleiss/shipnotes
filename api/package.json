@@ -1,0 +1,23 @@
+{
+  "name": "shipnotes-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ShipNotes API - the backend you will learn to ship like a DevOps engineer",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "migrate": "node src/migrate-cli.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.13.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "prom-client": "^15.1.3"
+  }
+}

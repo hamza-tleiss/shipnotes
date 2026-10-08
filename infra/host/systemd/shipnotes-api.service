@@ -1,0 +1,72 @@
+# /etc/systemd/system/shipnotes-api.service
+#
+# Runs the ShipNotes API as an unprivileged system user, restarts it when it
+# crashes, injects secrets from a root-only env file, and sends logs to journald.
+#
+# Install:  sudo install -m 644 infra/host/systemd/shipnotes-api.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now shipnotes-api
+# Inspect:  systemctl status shipnotes-api ; journalctl -u shipnotes-api -f
+
+[Unit]
+Description=ShipNotes API (Node.js)
+Documentation=https://github.com/hamza-tleiss/shipnotes
+# Start after the network is up. "After" only orders startup; it does not
+# require postgresql. The API retries its database connection on its own.
+Wants=network-online.target
+After=network-online.target postgresql.service
+# Crash-loop guard: if the service fails to start 5 times within 60 s, stop
+# trying and mark it failed, instead of restarting forever. These two keys
+# belong in [Unit], not [Service]: in [Service], systemd ignores
+# StartLimitIntervalSec with "Unknown key name" (check with systemd-analyze verify).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=shipnotes
+Group=shipnotes
+WorkingDirectory=/opt/shipnotes/api
+
+# KEY=VALUE lines: PORT, DATABASE_URL, NODE_ENV, LOG_LEVEL, APP_VERSION.
+# Owned by root, mode 600. systemd reads it as root before dropping privileges.
+EnvironmentFile=/etc/shipnotes/api.env
+
+# Absolute path to a SYSTEM-WIDE node (NodeSource apt package).
+# Never point this at ~/.nvm: services do not get your PATH, and the service
+# user cannot read your home directory.
+ExecStart=/usr/bin/node src/server.js
+
+# Crash (non-zero exit or killed by a signal) -> restart after 3 s.
+# A clean exit 0 after SIGTERM is NOT restarted, which is what we want on stop.
+Restart=on-failure
+RestartSec=3
+# The crash-loop limit (StartLimitIntervalSec / StartLimitBurst) is in [Unit] above.
+
+# Stop: SIGTERM to the main process, wait up to 15 s for the graceful shutdown
+# in src/server.js, then SIGKILL whatever is left.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=15
+
+# Log lines go to journald tagged with this identifier.
+SyslogIdentifier=shipnotes-api
+
+# ---- Hardening -------------------------------------------------------------
+# The API writes nothing to disk, so the whole filesystem can be read-only for it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Note: do NOT set MemoryDenyWriteExecute=true. Node's JIT compiler needs
+# writable+executable memory and would crash on start.
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

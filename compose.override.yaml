@@ -1,0 +1,41 @@
+# Development overrides. Compose merges this file on top of compose.yaml
+# automatically whenever you run `docker compose ...` in this directory.
+# To run the production shape only:  docker compose -f compose.yaml up -d
+#
+# What changes in dev:
+#   db        reachable from the host on 127.0.0.1:5432 (psql, DBeaver)
+#   api       src/ bind-mounted and run with `node --watch` (hot reload),
+#             debug logs, reachable on 127.0.0.1:3000 for curl and for the
+#             Vite dev proxy
+#   frontend  unchanged. For hot reload of the React app run `npm run dev` in
+#             frontend/ on the host: Vite proxies /api to localhost:3000
+#             (vite.config.ts), which is the api container published below.
+#
+# Only keys listed here change; everything else (healthchecks, depends_on,
+# volumes) still comes from compose.yaml. Lists such as `ports` and `volumes`
+# are APPENDED, mappings such as `environment` are merged key by key.
+
+services:
+  db:
+    ports:
+      # 127.0.0.1 prefix: only this machine can connect. Docker's default
+      # ("5432:5432") binds 0.0.0.0, i.e. every interface, and on a Linux host
+      # bypasses ufw. Never publish a database without the 127.0.0.1 prefix.
+      - "127.0.0.1:5432:5432"
+
+  api:
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+    # Replaces the image's CMD ["node", "src/server.js"]. --watch restarts the
+    # process when an imported file changes. node stays PID 1, so SIGTERM and
+    # `docker stop` still work exactly as in production.
+    command: ["node", "--watch", "src/server.js"]
+    volumes:
+      # Bind mount: the container sees your working copy. Edit on the host
+      # (inside WSL, under ~/code), node restarts in under a second. Works
+      # because ~/code is a real Linux filesystem; /mnt/c would not emit
+      # inotify events.
+      - ./api/src:/app/src:ro
+    ports:
+      - "127.0.0.1:3000:3000"

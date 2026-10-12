@@ -1,0 +1,127 @@
+# ShipNotes: the whole stack on one host, started with one command.
+#
+#   docker compose up -d --wait                   dev: this file + compose.override.yaml
+#   docker compose -f compose.yaml up -d --wait   production shape only (no override)
+#
+# ${VARIABLES} are interpolated from .env in this directory (copy .env.example).
+# "${X:?message}" makes Compose refuse to start when X is unset: fail loudly,
+# never fall back to a default password.
+
+# Project name. Containers become shipnotes-api-1, the network shipnotes_default,
+# the volume shipnotes_db-data. Override with -p for a second copy of the stack.
+name: shipnotes
+
+services:
+  # ---------------------------------------------------------------------------
+  # db: PostgreSQL. Only the api talks to it, so it publishes no ports here.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shipnotes
+      POSTGRES_DB: shipnotes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (cp .env.example .env)}
+    volumes:
+      # Named volume: the data directory survives `docker compose down`,
+      # image upgrades and container recreation. Deleted only by `down -v`.
+      - db-data:/var/lib/postgresql/data
+      # Seed script. The postgres entrypoint runs it ONLY when the data
+      # directory is empty (first start), so it never re-seeds an existing db.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # pg_isready exits 0 once the server accepts TCP connections. -h localhost
+      # forces TCP: during init the entrypoint runs a temporary socket-only
+      # server that would otherwise look "ready". -U avoids a "role root does
+      # not exist" line in the logs every few seconds.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U shipnotes -d shipnotes"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s     # first start runs init.sql; failures in this window do not count
+      start_interval: 2s    # probe faster while starting (Docker Engine 25+)
+    # Time between the stop signal (SIGINT for the postgres image = "fast
+    # shutdown") and SIGKILL. Never rely on the engine default: it is 10s
+    # upstream but 1s on some Docker Desktop installs, and a killed Postgres
+    # must run crash recovery on its next start.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # api: Node/Express. Reached by the browser only through the frontend proxy.
+  # ---------------------------------------------------------------------------
+  api:
+    # image + build together: `compose build` tags the result with this name,
+    # so the same file serves local builds and pulls from GHCR (Module 3).
+    image: ghcr.io/${GITHUB_USER:?Set GITHUB_USER in .env}/shipnotes-api:${IMAGE_TAG:-latest}
+    build:
+      context: ./api
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}   # -> ARG -> ENV, shown by /health
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # "db" is the service name above. Docker's embedded DNS resolves it on
+      # the project network. Port 5432 is the CONTAINER port; no publishing needed.
+      DATABASE_URL: postgres://shipnotes:${POSTGRES_PASSWORD}@db:5432/shipnotes
+    depends_on:
+      db:
+        # Start the api only after the db healthcheck passes. Without the
+        # condition, Compose only waits for the db CONTAINER to exist, and the
+        # api's first connection attempts fail (it retries, but the logs fill up).
+        condition: service_healthy
+    healthcheck:
+      # Repeats the image's HEALTHCHECK so this file documents what "healthy"
+      # means and so timings can be tuned per environment without a rebuild.
+      # /ready checks the database, so a lost db turns the api unhealthy.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    # SIGTERM -> SIGKILL window. Longer than the 10s forced-exit timer in
+    # src/server.js, so the app always gets to finish (or log why it could not).
+    stop_grace_period: 15s
+    restart: unless-stopped
+    # No ports: in production the api is private. compose.override.yaml
+    # publishes it on 127.0.0.1:3000 for development.
+
+  # ---------------------------------------------------------------------------
+  # frontend: nginx serving the React build and proxying /api, /health, /ready.
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ghcr.io/${GITHUB_USER:?Set GITHUB_USER in .env}/shipnotes-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+    ports:
+      # HOST:CONTAINER. 8080 on the host because the Module 1 nginx owns :80.
+      # Reachable from your Windows browser at http://localhost:8080.
+      - "8080:80"
+    depends_on:
+      api:
+        # nginx resolves the hostname "api" ONCE, when it starts, and fails
+        # hard if it does not exist yet. Waiting for a healthy api avoids that.
+        condition: service_healthy
+        # ...and because nginx keeps that IP forever, a recreated api (new
+        # image, new env) may come back on a different IP and nginx answers
+        # 502. restart: true makes Compose restart the frontend whenever it
+        # recreates or restarts the api. (Kubernetes does not need this: a
+        # Service keeps a stable ClusterIP. Module 6.)
+        restart: true
+    healthcheck:
+      # Exec form (CMD, not CMD-SHELL): no shell involved. 127.0.0.1 because
+      # nginx.conf listens on IPv4 only (see frontend/Dockerfile).
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
+    stop_grace_period: 10s   # nginx (SIGQUIT) finishes open requests, then exits
+    restart: unless-stopped
+
+# Named volumes are managed by Docker (/var/lib/docker/volumes/shipnotes_db-data).
+# `docker compose down` keeps them; `docker compose down -v` deletes them.
+volumes:
+  db-data:

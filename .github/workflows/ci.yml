@@ -1,0 +1,192 @@
+# ShipNotes CI: the pull request gate.
+#
+# Question this workflow answers, in about 3 minutes: "is this change safe to merge?"
+#
+#   pull_request ──┬── test-api          npm ci + node:test unit tests           [required check]
+#   push: main     ├── build-frontend    npm ci + tsc + vite build, dist artifact [required check]
+#                  ├── lint-dockerfiles  hadolint on both Dockerfiles
+#                  └── docker            buildx build of both images, no push    [required check]
+#
+# The four jobs have no `needs:` between them, so they run in parallel and the
+# slowest one sets the total time. Fail fast = everyone reports at once.
+#
+# Job ids ARE the check names that branch protection requires (Lab 3.1,
+# scripts/branch-protection.sh). Rename a job and every PR waits forever on
+# "Expected - Waiting for status to be reported".
+#
+# Actions are pinned to a major version tag here so the file stays readable.
+# Lab 3.8 pins them to full commit SHAs. The SHA-pinned form looks like this
+# (the trailing comment is what Dependabot reads and updates):
+#   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1          # v7.0.1
+#   uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020        # v7.0.0
+#   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+#   uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+#   uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+#   uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Least privilege for every job's GITHUB_TOKEN: read the code, nothing else.
+# This workflow never pushes, comments or publishes, so it never needs more.
+permissions:
+  contents: read
+
+# One run per PR (or per branch for pushes). A new push to the same PR cancels
+# the run that is still testing the old commit: nobody cares about its result.
+# On main we do NOT cancel: every commit on main should get its own verdict.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# `shell: bash` explicitly gives `bash -eo pipefail` for every run: step.
+# Without it the runner uses `bash -e` and a failing command on the left of a
+# pipe (`npm test | tee log`) would be silently ignored.
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Same major as the Dockerfiles (node:22-alpine) and package.json engines.
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  test-api:
+    runs-on: ubuntu-24.04          # same Ubuntu as your WSL; ubuntu-latest moves under you
+    timeout-minutes: 10            # the default is 360. A hung test should not burn 6 hours.
+    defaults:
+      run:
+        working-directory: api     # every `run:` below executes inside api/
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Do not leave the token in the checkout for later steps. Nothing in
+          # this job pushes to git, so nothing needs it.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # Cache ~/.npm (the download cache, not node_modules). The cache key
+          # is a hash of the lockfile, so a dependency change = a new cache.
+          cache: npm
+          # The lockfile is NOT at the repo root. Without this line setup-node
+          # fails with "Dependencies lock file is not found in ...".
+          cache-dependency-path: api/package-lock.json
+
+      # npm ci, never npm install: installs exactly the lockfile, fails if the
+      # lockfile and package.json disagree, and never rewrites the lockfile.
+      - run: npm ci
+
+      # node --test, no database needed (the tests inject a fake pg pool).
+      - run: npm test
+
+  # ---------------------------------------------------------------------------
+  build-frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # "build": "tsc --noEmit && vite build" -> a type error fails the job here.
+      - run: npm run build
+
+      # Keep the bundle so a reviewer can download exactly what was built:
+      #   gh run download <run-id> -n frontend-dist
+      # Note: `with: path:` is relative to the repo root. defaults.run.working-directory
+      # only applies to `run:` steps, never to `uses:` steps.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error   # an empty upload is a bug, not a warning
+          retention-days: 7          # artifacts count against storage; a week is plenty
+
+  # ---------------------------------------------------------------------------
+  lint-dockerfiles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # hadolint-action passes its own defaults as environment variables, and
+      # its default failure-threshold is "info". Setting config and threshold
+      # explicitly makes CI behave exactly like `make lint` from Module 2.
+      - name: hadolint api/Dockerfile
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: api/Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+      # !cancelled(): run even if the previous step failed, so one CI run
+      # reports the problems in BOTH Dockerfiles. The expression needs ${{ }}
+      # because a YAML value cannot start with "!".
+      - name: hadolint frontend/Dockerfile
+        if: ${{ !cancelled() }}
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: frontend/Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+  # ---------------------------------------------------------------------------
+  docker:
+    # On main, release.yml builds AND pushes these same images. Building them
+    # here as well would only burn minutes. A job skipped by `if:` reports
+    # "Success", so it still satisfies the required check.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Creates a BuildKit builder (docker-container driver). The default
+      # "docker" driver cannot export cache to the GitHub Actions cache.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build api image (not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: api                 # a path = build the checked-out files (not a git URL)
+          push: false                  # PRs prove the image builds; only main publishes
+          build-args: |
+            APP_VERSION=pr-${{ github.event.pull_request.number }}
+          # Layer cache stored in the GitHub Actions cache service.
+          # scope= keeps the api and frontend caches apart; without it both
+          # builds write to the default scope and overwrite each other.
+          # mode=max also caches the intermediate (deps/build) stages.
+          # release.yml uses the same scopes, so PRs start from main's cache.
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Build frontend image (not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: frontend
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max

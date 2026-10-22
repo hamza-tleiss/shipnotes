@@ -1,0 +1,25 @@
+# Build context exclusions for the frontend image (relative to frontend/).
+
+# The build stage runs its own npm ci; host node_modules are the wrong
+# platform anyway and are by far the largest directory here.
+node_modules
+
+# A stale local build must never leak into the image; the build stage
+# produces a fresh dist/.
+dist
+
+# Secrets and env files (Vite would inline VITE_* vars from them at build time)
+.env
+.env.*
+!.env.example
+
+# Not needed to build
+Dockerfile
+.dockerignore
+.git
+.gitignore
+*.md
+.vscode
+.idea
+.DS_Store
+npm-debug.log*

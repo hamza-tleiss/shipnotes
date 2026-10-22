@@ -17,12 +17,12 @@
 # Actions are pinned to a major version tag here so the file stays readable.
 # Lab 3.8 pins them to full commit SHAs. The SHA-pinned form looks like this
 # (the trailing comment is what Dependabot reads and updates):
-#   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1          # v7.0.1
-#   uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020        # v7.0.0
-#   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
-#   uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+#   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#   uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+#   uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+#   uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
 #   uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-#   uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+#   uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
 
 name: ci
 
@@ -64,13 +64,13 @@ jobs:
       run:
         working-directory: api     # every `run:` below executes inside api/
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Do not leave the token in the checkout for later steps. Nothing in
           # this job pushes to git, so nothing needs it.
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           # Cache ~/.npm (the download cache, not node_modules). The cache key
@@ -95,11 +95,11 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -114,7 +114,7 @@ jobs:
       #   gh run download <run-id> -n frontend-dist
       # Note: `with: path:` is relative to the repo root. defaults.run.working-directory
       # only applies to `run:` steps, never to `uses:` steps.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-dist
           path: frontend/dist
@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -134,7 +134,7 @@ jobs:
       # its default failure-threshold is "info". Setting config and threshold
       # explicitly makes CI behave exactly like `make lint` from Module 2.
       - name: hadolint api/Dockerfile
-        uses: hadolint/hadolint-action@v3.5.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: api/Dockerfile
           config: .hadolint.yaml
@@ -145,7 +145,7 @@ jobs:
       # because a YAML value cannot start with "!".
       - name: hadolint frontend/Dockerfile
         if: ${{ !cancelled() }}
-        uses: hadolint/hadolint-action@v3.5.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: frontend/Dockerfile
           config: .hadolint.yaml
@@ -160,16 +160,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # Creates a BuildKit builder (docker-container driver). The default
       # "docker" driver cannot export cache to the GitHub Actions cache.
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build api image (not pushed)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: api                 # a path = build the checked-out files (not a git URL)
           push: false                  # PRs prove the image builds; only main publishes
@@ -184,7 +184,7 @@ jobs:
           cache-to: type=gha,scope=api,mode=max
 
       - name: Build frontend image (not pushed)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend
           push: false

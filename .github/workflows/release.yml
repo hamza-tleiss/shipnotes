@@ -1,0 +1,289 @@
+# ShipNotes release: publish images to GHCR. Build once, promote by re-tagging.
+#
+#   push to main ──> images (matrix: api, frontend)
+#                      build -> load -> trivy scan -> SARIF to Security tab
+#                      -> gate on fixable CRITICAL -> push :sha-<7 chars>
+#
+#   push tag v1.2.3 ─> check-tag ──> promote (matrix) ──────────> github-release
+#                      tag is on      add :v1.2.3 and :v1.2 to      notes generated
+#                      main?          the EXISTING :sha-xxxxxxx     from merged PRs
+#                                     image. No rebuild.
+#
+# Why no rebuild on tags: the image you tested and scanned on main is, byte for
+# byte, the image you release and deploy. Same digest everywhere. A rebuild
+# would pull newer base layers and newer npm patch versions = a different,
+# untested artifact with a trustworthy-looking version number.
+#
+# Image naming (COURSE_SPEC.md section 4):
+#   ghcr.io/<owner>/shipnotes-api:sha-a1b2c3d   every main commit
+#   ghcr.io/<owner>/shipnotes-api:v1.2.0        every release tag (+ v1.2)
+#   no `latest` is ever pushed
+#
+# SHA-pinned form of the actions used here (Lab 3.8):
+#   uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f     # v4.6.0
+#   uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+#   uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+#   uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    # Quoted glob. Matches v1.2.3 and v1.2.3-rc.1, not "v1" or "version-x".
+    tags: ["v*.*.*"]
+
+# Default for every job: read-only. Jobs that publish ask for more, explicitly.
+permissions:
+  contents: read
+
+# Never cancel a release half way (half-pushed tags are worse than a queue).
+# Note: GitHub keeps at most ONE pending run per group; an older pending run
+# is replaced by a newer one. For main that is fine: the newest commit wins.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # GHCR names must be lowercase. hamza-tleiss already is. If an owner name has
+  # capitals, compute it in a step instead: echo "X=${GITHUB_REPOSITORY_OWNER,,}"
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/shipnotes
+
+jobs:
+  # ===========================================================================
+  # main: build, scan, push sha-<short>
+  # ===========================================================================
+  images:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Job-level permissions REPLACE the workflow-level block (they do not merge),
+    # so contents: read must be repeated here.
+    permissions:
+      contents: read           # checkout
+      packages: write          # push to ghcr.io with GITHUB_TOKEN
+      security-events: write   # upload SARIF to the Security tab
+      # (a private repo also needs `actions: read` for the SARIF upload)
+    strategy:
+      fail-fast: false         # a broken frontend build should not cancel the api push
+      matrix:
+        service: [api, frontend]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v4
+
+      # GITHUB_TOKEN is a short-lived token minted for this run only. No PAT,
+      # nothing to rotate. It can push only because of `packages: write` above.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Turns the git context into image tags and OCI labels.
+      # type=sha,prefix=sha- -> sha-a1b2c3d (7 chars by default)
+      # latest=false: metadata-action must never add `latest` (course rule).
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=sha,prefix=sha-
+          flavor: |
+            latest=false
+          # metadata-action sets title = repo name ("shipnotes"); keep the
+          # per-image title from the Dockerfile instead.
+          labels: |
+            org.opencontainers.image.title=shipnotes-${{ matrix.service }}
+
+      # Step 1 of "scan before you publish": build into the runner's Docker
+      # engine (load: true) without pushing anything.
+      - name: Build (load locally, not pushed yet)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.service }}
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # APP_VERSION is shown by /health. outputs.version is "sha-a1b2c3d".
+          # The frontend Dockerfile has no APP_VERSION ARG and ignores it.
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+      # Report: every fixable HIGH/CRITICAL CVE goes to Security > Code scanning.
+      # exit-code 0: reporting never fails the job; the gate below does.
+      - name: Scan image (report)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true   # without it SARIF contains every severity
+          ignore-unfixed: true               # only CVEs you can act on (a fixed version exists)
+          exit-code: "0"
+
+      # !cancelled(): upload even when an earlier step failed, so findings are
+      # visible exactly when you need them. `category` keeps the api and
+      # frontend results separate; security.yml reuses the same categories.
+      - name: Upload scan to code scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+
+      # Gate: refuse to publish an image with a CRITICAL CVE that has a fix.
+      # Second trivy run reuses the binary and vulnerability DB from the first.
+      - name: Gate on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+      # Same inputs as the build step, so BuildKit answers every layer from its
+      # local cache in seconds: this step only uploads the layers.
+      - name: Push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+      # Data from expressions goes through env:, never straight into the script.
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### ${{ matrix.service }} image pushed"
+            echo '```'
+            echo "$TAGS"
+            echo "digest: $DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # tag v*: verify, promote (re-tag), publish a GitHub Release
+  # ===========================================================================
+  check-tag:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 = full history and all branches. The default (1) fetches
+      # only the tagged commit, origin/main does not exist, and the check below
+      # fails with "fatal: Not a valid object name origin/main".
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Only commits that went through PR + CI + the main build may be released.
+      # GITHUB_SHA on a tag push is the commit the tag points to.
+      - name: Refuse tags that are not on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to ${GITHUB_SHA::7}, which is not on main."
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME -> ${GITHUB_SHA::7} is on main."
+
+  promote:
+    needs: check-tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api, frontend]
+    steps:
+      # No checkout: re-tagging is a registry operation on the manifest.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # v1.2.3 -> tags v1.2.3 and v1.2. A pre-release (v1.3.0-rc.1) only gets
+      # its full version, by design of metadata-action.
+      - name: Compute version tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+          flavor: |
+            latest=false
+
+      # imagetools create copies the manifest under new names. Same digest,
+      # zero layers rebuilt or re-uploaded.
+      - name: Add version tags to the existing sha image
+        env:
+          SERVICE: ${{ matrix.service }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          source_ref="${IMAGE_PREFIX}-${SERVICE}:sha-${GITHUB_SHA::7}"
+          if ! docker buildx imagetools inspect "$source_ref" > /dev/null; then
+            echo "::error::$source_ref not found. Wait for the main release run of this commit to go green, then re-run this job."
+            exit 1
+          fi
+          args=()
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then args+=(--tag "$tag"); fi
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "$source_ref"
+          echo "Promoted $source_ref to:" >> "$GITHUB_STEP_SUMMARY"
+          echo "$TAGS" >> "$GITHUB_STEP_SUMMARY"
+
+  github-release:
+    needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write          # create the Release object
+    steps:
+      # --generate-notes builds the changelog from PR titles merged since the
+      # previous tag (your Conventional Commit titles). --notes is prepended.
+      # A release created with GITHUB_TOKEN does NOT trigger other workflows
+      # (GitHub prevents recursive runs), so nothing listens to `release` here.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=(--repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes)
+          if [[ "$TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          notes="Images (same digests as sha-${GITHUB_SHA::7}):
+          - \`${IMAGE_PREFIX}-api:${TAG}\`
+          - \`${IMAGE_PREFIX}-frontend:${TAG}\`
+
+          Deploy: \`gh workflow run deploy.yml -f image_tag=${TAG}\`"
+          gh release create "$TAG" "${flags[@]}" --notes "$notes"

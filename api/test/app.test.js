@@ -105,3 +105,12 @@ test('GET /metrics exposes prometheus text', async () => {
     assert.match(text, /http_requests_total/);
   });
 });
+test('GET /health reports the build version', async () => {
+  const app = createApp({ pool: fakePool(), logger: silent });
+  await withServer(app, async (base) => {
+    const json = await (await fetch(`${base}/health`)).json();
+    // Deliberately wrong: nothing sets APP_VERSION while the tests run.
+    assert.equal(json.version, 'sha-1234567');
+  });
+});
+

@@ -1,5 +1,9 @@
 # ShipNotes
 
+[![ci](https://github.com/hamza-tleiss/shipnotes/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hamza-tleiss/shipnotes/actions/workflows/ci.yml)
+[![release](https://github.com/hamza-tleiss/shipnotes/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/hamza-tleiss/shipnotes/actions/workflows/release.yml)
+[![security](https://github.com/hamza-tleiss/shipnotes/actions/workflows/security.yml/badge.svg)](https://github.com/hamza-tleiss/shipnotes/actions/workflows/security.yml)
+
 A deliberately small three-tier web app (React + Node API + PostgreSQL) that exists for one
 reason: to be **shipped** in every way a DevOps engineer ships software.
 

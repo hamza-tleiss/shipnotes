@@ -1,0 +1,66 @@
+# Dependabot version updates for ShipNotes.
+# Dependabot opens PRs; ci.yml tests them like any other PR; you merge.
+# Security updates (Settings > Code security > Dependabot security updates) are
+# separate: they open PRs as soon as an advisory affects you, regardless of
+# the schedule and the cooldown below.
+#
+# Docs: https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # npm: the api and the frontend each have their own package-lock.json.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directories:
+      - /api
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"           # UTC
+    # Supply-chain brake: do not propose a version until it has been public
+    # for a few days. Most malicious package releases are caught and pulled
+    # within that window. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+    # One PR per week for all minor/patch bumps of a directory instead of ten.
+    # Majors still arrive one PR each, because they deserve a real review.
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    # Conventional Commits: "chore(deps): bump express from 5.1.0 to 5.2.0"
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions: directory "/" means .github/workflows/ (and action.yml files).
+  # Works for both pinning styles:
+  #   uses: actions/checkout@v7                                      -> @v8
+  #   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #     -> new SHA AND an updated "# v7.x.y" comment in the same PR
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 5
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+    # "ci(deps): bump docker/build-push-action from 7.3.0 to 7.4.0"
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # No "docker" entry on purpose. The Dockerfiles use floating tags
+  # (node:22-alpine, nginx:1.27-alpine): patch releases arrive with every
+  # rebuild, and a docker entry would mostly propose Node major upgrades.
+  # Add one when you pin base images by digest (Module 10).

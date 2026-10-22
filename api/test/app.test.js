@@ -110,7 +110,7 @@ test('GET /health reports the build version', async () => {
   await withServer(app, async (base) => {
     const json = await (await fetch(`${base}/health`)).json();
     // Deliberately wrong: nothing sets APP_VERSION while the tests run.
-    assert.equal(json.version, 'sha-1234567');
+    assert.equal(json.version, process.env.APP_VERSION ?? 'dev')
   });
 });
 

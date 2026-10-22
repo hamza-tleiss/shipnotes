@@ -1,0 +1,29 @@
+# What NOT to send to the Docker daemon as build context (and therefore what
+# `COPY . .` can never pick up). Same idea as .gitignore, but for the build.
+# Patterns are relative to the build context directory (api/).
+
+# Installed on the host for your OS/arch; the image installs its own with npm ci.
+# Without this line the context goes from ~100 kB to tens of MB and every
+# source edit invalidates the COPY layer.
+node_modules
+
+# Secrets. A COPY . . with a .env inside would bake credentials into a layer
+# that `docker history` and `docker save` can read back forever.
+.env
+.env.*
+!.env.example
+
+# Tests run in CI on the runner (Module 3), not inside the production image.
+test
+coverage
+
+# Build metadata and editor noise
+Dockerfile
+.dockerignore
+.git
+.gitignore
+*.md
+.vscode
+.idea
+.DS_Store
+npm-debug.log*

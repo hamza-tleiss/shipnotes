@@ -1,0 +1,31 @@
+# CODEOWNERS: who must review changes to which paths.
+#
+# Each line is a path pattern (gitignore syntax) followed by one or more owners.
+# The LAST matching line wins, so put the general rule first and the
+# specific ones after it.
+#
+# What it does today (solo repo): GitHub requests a review from the owner on
+# every PR that touches a matching path.
+# What it does in a team: with "Require review from Code Owners" enabled in
+# branch protection, a PR cannot merge until an owner of every touched path
+# approves. You cannot approve your own PR, which is why
+# scripts/branch-protection.sh leaves that option off until a second person
+# joins the repo.
+
+# Default owner for everything
+*                       @hamza-tleiss
+
+# The delivery pipeline itself. A change here can publish images or deploy
+# to production, so in a team this is where a platform owner is listed.
+/.github/               @hamza-tleiss
+/scripts/               @hamza-tleiss
+
+# Container build definitions
+/api/Dockerfile         @hamza-tleiss
+/frontend/Dockerfile    @hamza-tleiss
+/frontend/nginx.conf    @hamza-tleiss
+/compose.yaml           @hamza-tleiss
+
+# Infrastructure (Module 4 onward)
+/infra/                 @hamza-tleiss
+/deploy/                @hamza-tleiss

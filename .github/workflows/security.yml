@@ -1,0 +1,139 @@
+# ShipNotes weekly security scan.
+#
+# Images do not change after they are pushed, but the CVE databases do. An image
+# that scanned clean on Monday can have a published CRITICAL on Thursday. This
+# workflow rescans on a schedule so you hear about it without pushing code.
+#
+#   scan-repo     trivy fs: npm lockfiles (vulns), Dockerfiles (misconfig), secrets
+#   scan-images   trivy image: the published sha-<short> images of main's HEAD
+#
+# Results land in Security > Code scanning (free for public repos). A scheduled
+# run that fails sends you an email: that is the alerting mechanism here.
+#
+# SHA-pinned form (Lab 3.8):
+#   uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+#   uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+
+name: security
+
+on:
+  schedule:
+    # Mondays 05:23 UTC. Not minute 0: on the hour every repo on GitHub fires
+    # its cron and runs start late. Schedules run from the default branch only,
+    # and GitHub disables them after 60 days without activity in a public repo.
+    - cron: "23 5 * * 1"
+  workflow_dispatch: {}      # "Run workflow" button / gh workflow run security.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true   # a newer scan makes an older one pointless
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/shipnotes
+
+jobs:
+  scan-repo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # fs scan of the checkout. vuln reads api/ and frontend/ package-lock.json
+      # (production dependencies only by default), misconfig checks the
+      # Dockerfiles and compose.yaml, secret looks for committed credentials.
+      # Report only: findings are triaged in the Security tab, not by red builds.
+      - name: Scan repository
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-repo.sarif
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Upload to code scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-repo.sarif
+          category: trivy-repo
+
+  scan-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read           # pull from GHCR even if the packages are private
+      security-events: write
+    strategy:
+      fail-fast: false         # always scan both images
+      matrix:
+        service: [api, frontend]
+    steps:
+      # upload-sarif expects a checkout to resolve file paths in the results.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # On schedule and workflow_dispatch, GITHUB_SHA is the HEAD of main, and
+      # release.yml pushed sha-<that commit> for it. Written to GITHUB_ENV so
+      # later steps read it as ${{ env.IMAGE_REF }}.
+      - name: Image reference for main's HEAD
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: echo "IMAGE_REF=${IMAGE_PREFIX}-${SERVICE}:sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      # trivy pulls straight from the registry and uses the credentials that
+      # docker/login-action writes to ~/.docker/config.json.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image (report)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # Same category as release.yml: the newest upload for a category on main
+      # replaces the previous one, so fixed CVEs close their alerts by themselves.
+      - name: Upload to code scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+
+      # Turn the run red (= email) when a fixable CRITICAL appears.
+      - name: Fail on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true

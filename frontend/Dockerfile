@@ -31,9 +31,9 @@ RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
-# nginx:1.27-alpine: stable branch, pinned to minor; patch releases float.
+# nginx:1.30-alpine: stable branch, pinned to minor; patch releases float.
 # ---------------------------------------------------------------------------
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.30-alpine AS runtime
 
 # OCI labels; see api/Dockerfile. Put YOUR repo URL in .source.
 LABEL org.opencontainers.image.source="https://github.com/hamza-tleiss/shipnotes" \
@@ -51,7 +51,7 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # nginx starts as root (to bind :80 and read config), then drops its worker
 # processes to the unprivileged "nginx" user. If a platform forbids root
 # entirely (Kubernetes PodSecurity "restricted", Module 10), switch the base
-# image to nginxinc/nginx-unprivileged:1.27-alpine, which listens on 8080.
+# image to nginxinc/nginx-unprivileged:1.30-alpine, which listens on 8080.
 EXPOSE 80
 
 # Serve index.html to ourselves. If nginx cannot answer, the container is

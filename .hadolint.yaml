@@ -1,0 +1,34 @@
+# hadolint configuration (Dockerfile linter). hadolint reads this file from
+# the directory it runs in; `make lint` mounts the repo root there.
+# Rule list: https://github.com/hadolint/hadolint#rules
+
+# By default hadolint exits non-zero on ANY finding, even "info" style hints.
+# Policy here: warnings and errors fail the run (DL3025 shell-form CMD, DL3002
+# last USER is root, DL3018 unpinned apk packages...), "info" and "style"
+# findings are printed but do not break CI.
+failure-threshold: warning
+
+# DL3026: base images must come from one of these registries. Catches a typo
+# or a squatted image name. docker.io covers bare names like node:22-alpine.
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+  - gcr.io
+
+# Every image must carry these OCI labels, with values of the given type.
+# org.opencontainers.image.source is what links a GHCR package to the repo.
+label-schema:
+  org.opencontainers.image.source: url
+  org.opencontainers.image.title: text
+# Extra labels (description, version) are allowed.
+strict-labels: false
+
+# A missing required label (DL3049) is only "info" by default, which the
+# threshold above would let through. Promote it so the schema is enforced.
+override:
+  warning:
+    - DL3049
+
+# No rules are ignored. When one must be, add it here with a comment saying
+# why, so every exception is visible in one place instead of inline pragmas.
+ignored: []
